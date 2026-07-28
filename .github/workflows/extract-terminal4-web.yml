@@ -12,10 +12,14 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: terminal4-web-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   extract-terminal4:
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
       - name: Check out exact source commit
         uses: actions/checkout@v4

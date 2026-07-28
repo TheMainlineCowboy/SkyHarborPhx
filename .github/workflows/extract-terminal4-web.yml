@@ -1,0 +1,52 @@
+name: Extract Terminal 4 web asset
+
+on:
+  pull_request:
+    paths:
+      - 'scenery/term4.BGL'
+      - 'scripts/extract-terminal4-mdlx.mjs'
+      - '.github/workflows/extract-terminal4-web.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: terminal4-web-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  extract-terminal4:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out exact source commit
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js extractor runtime
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Extract embedded FSX MDLX Terminal 4 model
+        run: node scripts/extract-terminal4-mdlx.mjs scenery/term4.BGL web-extract/terminal4
+
+      - name: Verify extracted web asset
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s web-extract/terminal4/terminal4.gltf
+          test -s web-extract/terminal4/terminal4.bin
+          test -s web-extract/terminal4/extraction-manifest.json
+          grep -q 'PHX_Terminal4_Authored' web-extract/terminal4/terminal4.gltf
+          grep -q 'triangleCount' web-extract/terminal4/extraction-manifest.json
+          find web-extract/terminal4 -type f -printf '%p %s bytes\n'
+
+      - name: Upload Terminal 4 extraction
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: terminal4-web-extraction-${{ github.sha }}
+          path: web-extract/terminal4/
+          if-no-files-found: warn
+          retention-days: 7

@@ -8,9 +8,9 @@ $logs = Join-Path $root 'web-extract\logs'
 $intermediate = Join-Path $root 'web-extract\intermediate'
 New-Item -ItemType Directory -Force -Path $tools, $out, $logs, $intermediate | Out-Null
 
-$zip = Join-Path $env:RUNNER_TEMP 'ModelConverterX_180.zip'
-$download = 'https://www.scenerydesign.org/old-releases/stable/ModelConverterX_180.zip'
-Write-Host "Downloading ModelConverterX 1.8 from $download"
+$zip = Join-Path $env:RUNNER_TEMP 'ModelConverterX_170.zip'
+$download = 'https://www.scenerydesign.org/old-releases/stable/ModelConverterX_170.zip'
+Write-Host "Downloading ModelConverterX 1.7 from $download"
 Invoke-WebRequest -Uri $download -OutFile $zip -UseBasicParsing
 Write-Host "Downloaded $((Get-Item $zip).Length) bytes"
 Expand-Archive -Path $zip -DestinationPath $tools -Force
@@ -18,6 +18,7 @@ Expand-Archive -Path $zip -DestinationPath $tools -Force
 $mcx = Get-ChildItem -Path $tools -Filter 'ModelConverterX.exe' -Recurse | Select-Object -First 1
 if (-not $mcx) { throw 'ModelConverterX.exe was not found after extraction' }
 Write-Host "Using ModelConverterX: $($mcx.FullName)"
+Write-Host "MCX file version: $($mcx.VersionInfo.FileVersion)"
 
 function Invoke-BoundedProcess {
   param([string] $FilePath, [string[]] $Arguments, [string] $Name, [int] $TimeoutSeconds)
@@ -28,8 +29,9 @@ function Invoke-BoundedProcess {
   $process = Start-Process -FilePath $FilePath -ArgumentList $Arguments -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
   $finished = $process.WaitForExit($TimeoutSeconds * 1000)
   if (-not $finished) {
-    Write-Host "$Name exceeded ${TimeoutSeconds}s; terminating process $($process.Id)"
-    Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+    Write-Host "$Name exceeded ${TimeoutSeconds}s; terminating full process tree $($process.Id)"
+    & taskkill.exe /PID $process.Id /T /F 2>&1 | ForEach-Object { Write-Host "[taskkill] $_" }
+    try { $process.WaitForExit(5000) | Out-Null } catch {}
   }
   if (Test-Path $stdout) { Get-Content $stdout | ForEach-Object { Write-Host "[$Name stdout] $_" } }
   if (Test-Path $stderr) { Get-Content $stderr | ForEach-Object { Write-Host "[$Name stderr] $_" } }
@@ -48,7 +50,7 @@ Write-Host "Staged $($rootTextures.Count) flattened root textures into $textureD
 Get-ChildItem -Path $out -File -Recurse -ErrorAction SilentlyContinue | Remove-Item -Force
 Get-ChildItem -Path $intermediate -File -Recurse -ErrorAction SilentlyContinue | Remove-Item -Force
 
-# MCX performs only the proprietary BGL -> open OBJ extraction. Everything after this is ours.
+# MCX 1.7 performs only the proprietary BGL -> open OBJ extraction. Everything after this is ours.
 $obj = Join-Path $intermediate 'terminal4.obj'
 $objResult = Invoke-BoundedProcess -FilePath $mcx.FullName -Arguments @($source, '-out', $obj, '-format', 'OBJ') -Name 'mcx-obj' -TimeoutSeconds 75
 if (-not (Test-Path $obj) -or (Get-Item $obj).Length -lt 1024) {
@@ -70,7 +72,7 @@ $manifest = [ordered]@{
   source = 'scenery/term4.BGL'
   sourceBytes = (Get-Item $source).Length
   sourceSha256 = (Get-FileHash $source -Algorithm SHA256).Hash.ToLowerInvariant()
-  converter = 'ModelConverterX 1.8 -> OBJ -> RampReady obj-to-gltf'
+  converter = 'ModelConverterX 1.7 -> OBJ -> RampReady obj-to-gltf'
   stagedTextureCount = $rootTextures.Count
   objBytes = (Get-Item $obj).Length
   generatedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
@@ -84,5 +86,5 @@ $manifest = [ordered]@{
 }
 $manifest | ConvertTo-Json -Depth 8 | Set-Content -Path (Join-Path $out 'extraction-manifest.json') -Encoding UTF8
 
-Write-Host 'Terminal 4 extraction succeeded via MCX OBJ -> RampReady glTF converter'
+Write-Host 'Terminal 4 extraction succeeded via MCX 1.7 OBJ -> RampReady glTF converter'
 Get-ChildItem -Path $out -File -Recurse | ForEach-Object { Write-Host ("{0}  {1} bytes" -f $_.FullName, $_.Length) }

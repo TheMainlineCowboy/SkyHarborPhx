@@ -169,7 +169,13 @@ for (let materialIndex = 0; materialIndex < materialNames.length; materialIndex 
   const indices = primitiveIndices.get(materialNames[materialIndex]);
   if (!indices?.length) continue;
   const indexArray = Uint32Array.from(indices);
-  const indexAccessor = addAccessor(append(Buffer.from(indexArray.buffer), 34963), 5125, indexArray.length, "SCALAR", [Math.min(...indices)], [Math.max(...indices)]);
+  let indexMin = Number.POSITIVE_INFINITY;
+  let indexMax = Number.NEGATIVE_INFINITY;
+  for (const value of indices) {
+    if (value < indexMin) indexMin = value;
+    if (value > indexMax) indexMax = value;
+  }
+  const indexAccessor = addAccessor(append(Buffer.from(indexArray.buffer), 34963), 5125, indexArray.length, "SCALAR", [indexMin], [indexMax]);
   const attributes = { POSITION: posAccessor };
   if (uvAccessor != null) attributes.TEXCOORD_0 = uvAccessor;
   if (normalAccessor != null) attributes.NORMAL = normalAccessor;

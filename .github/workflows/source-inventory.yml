@@ -1,0 +1,40 @@
+name: Inventory Sky Harbor source
+
+on:
+  push:
+    branches:
+      - agent/source-inventory
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inventory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inventory source files
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p source-inventory
+          find . -type f -not -path './.git/*' -printf '%P\t%s\n' | sort > source-inventory/files.tsv
+          find . -type f -not -path './.git/*' -exec sha256sum {} + | sed 's#  \./#\t#' | sort -k2 > source-inventory/sha256.tsv
+          printf 'BGL files: ' > source-inventory/summary.txt
+          find . -type f -iname '*.bgl' | wc -l >> source-inventory/summary.txt
+          printf 'DDS files: ' >> source-inventory/summary.txt
+          find . -type f -iname '*.dds' | wc -l >> source-inventory/summary.txt
+          printf 'BMP files: ' >> source-inventory/summary.txt
+          find . -type f -iname '*.bmp' | wc -l >> source-inventory/summary.txt
+          printf 'GLTF/GLB files: ' >> source-inventory/summary.txt
+          find . -type f \( -iname '*.gltf' -o -iname '*.glb' \) | wc -l >> source-inventory/summary.txt
+          cat source-inventory/summary.txt
+      - name: Upload inventory
+        uses: actions/upload-artifact@v4
+        with:
+          name: skyharbor-source-inventory-${{ github.sha }}
+          path: source-inventory/
+          if-no-files-found: error
+          retention-days: 7

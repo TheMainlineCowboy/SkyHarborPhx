@@ -5,7 +5,8 @@ $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $tools = Join-Path $root '.tools\modelconverterx'
 $out = Join-Path $root 'web-extract\terminal4'
 $logs = Join-Path $root 'web-extract\logs'
-New-Item -ItemType Directory -Force -Path $tools, $out, $logs | Out-Null
+$intermediate = Join-Path $root 'web-extract\intermediate'
+New-Item -ItemType Directory -Force -Path $tools, $out, $logs, $intermediate | Out-Null
 
 $zip = Join-Path $env:RUNNER_TEMP 'ModelConverterX_180.zip'
 $download = 'https://www.scenerydesign.org/old-releases/stable/ModelConverterX_180.zip'
@@ -22,7 +23,7 @@ function Invoke-Mcx {
   param(
     [string[]] $Arguments,
     [string] $Name,
-    [int] $TimeoutSeconds = 90
+    [int] $TimeoutSeconds = 75
   )
   $stdout = Join-Path $logs "$Name.stdout.txt"
   $stderr = Join-Path $logs "$Name.stderr.txt"
@@ -39,20 +40,14 @@ function Invoke-Mcx {
   return [pscustomobject]@{
     TimedOut = -not $finished
     ExitCode = if ($finished) { $process.ExitCode } else { 124 }
-    Stdout = $stdout
-    Stderr = $stderr
   }
 }
-
-$help = Invoke-Mcx -Arguments @('-help') -Name 'help' -TimeoutSeconds 30
-Write-Host "MCX help exit=$($help.ExitCode) timedOut=$($help.TimedOut)"
 
 $source = Join-Path $root 'scenery\term4.BGL'
 if (-not (Test-Path $source)) { throw "Missing Terminal 4 source: $source" }
 
-# The original scenery package was uploaded to GitHub with its texture directory flattened
-# into the repository root. Recreate the expected sibling `texture` directory only in CI so
-# ModelConverterX can resolve as many source materials as are actually present.
+# The source package was flattened when uploaded. Recreate the expected texture folder only
+# inside the runner so ModelConverterX can resolve the original material references.
 $textureDir = Join-Path $root 'texture'
 New-Item -ItemType Directory -Force -Path $textureDir | Out-Null
 $rootTextures = @(Get-ChildItem -Path $root -File | Where-Object { $_.Extension -match '^\.(bmp|dds)$' })
@@ -61,30 +56,35 @@ foreach ($texture in $rootTextures) {
 }
 Write-Host "Staged $($rootTextures.Count) flattened root textures into $textureDir"
 
-$candidates = @('GLTF', 'GLTF2', 'GLTF_2', 'GLTF_2_0')
-$converted = $false
-foreach ($format in $candidates) {
-  Write-Host "Trying ModelConverterX output format: $format"
-  Get-ChildItem -Path $out -File -Recurse -ErrorAction SilentlyContinue | Remove-Item -Force
-  $target = Join-Path $out 'terminal4.gltf'
-  $result = Invoke-Mcx -Arguments @($source, '-out', $target, '-format', $format) -Name ("convert-{0}" -f $format) -TimeoutSeconds 120
-  $outputs = @(Get-ChildItem -Path $out -File -Recurse -ErrorAction SilentlyContinue)
-  $gltf = @($outputs | Where-Object { $_.Extension -in @('.gltf', '.glb') })
-  Write-Host "Format $format exit=$($result.ExitCode) timedOut=$($result.TimedOut) outputs=$($outputs.Count) gltf=$($gltf.Count)"
-  if ($gltf.Count -gt 0) {
-    $converted = $true
-    break
+Get-ChildItem -Path $out -File -Recurse -ErrorAction SilentlyContinue | Remove-Item -Force
+Get-ChildItem -Path $intermediate -File -Recurse -ErrorAction SilentlyContinue | Remove-Item -Force
+
+$directTarget = Join-Path $out 'terminal4.gltf'
+$direct = Invoke-Mcx -Arguments @($source, '-out', $directTarget, '-format', 'GLTF') -Name 'direct-gltf' -TimeoutSeconds 75
+$gltf = @(Get-ChildItem -Path $out -File -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.Extension -in @('.gltf', '.glb') })
+$conversionPath = 'mcx-direct-gltf'
+
+if ($gltf.Count -lt 1) {
+  Write-Host "Direct glTF did not finish successfully (exit=$($direct.ExitCode), timedOut=$($direct.TimedOut)). Falling back to OBJ."
+  $obj = Join-Path $intermediate 'terminal4.obj'
+  $objResult = Invoke-Mcx -Arguments @($source, '-out', $obj, '-format', 'OBJ') -Name 'obj-fallback' -TimeoutSeconds 75
+  if (-not (Test-Path $obj) -or (Get-Item $obj).Length -lt 1024) {
+    throw "ModelConverterX OBJ fallback did not produce usable geometry (exit=$($objResult.ExitCode), timedOut=$($objResult.TimedOut))"
   }
+
+  Write-Host "OBJ fallback produced $((Get-Item $obj).Length) bytes; converting with obj2gltf"
+  $npx = (Get-Command npx.cmd -ErrorAction Stop).Source
+  $obj2gltfStdout = Join-Path $logs 'obj2gltf.stdout.txt'
+  $obj2gltfStderr = Join-Path $logs 'obj2gltf.stderr.txt'
+  $p = Start-Process -FilePath $npx -ArgumentList @('--yes','obj2gltf','-i',$obj,'-o',$directTarget) -PassThru -Wait -RedirectStandardOutput $obj2gltfStdout -RedirectStandardError $obj2gltfStderr
+  if (Test-Path $obj2gltfStdout) { Get-Content $obj2gltfStdout | ForEach-Object { Write-Host "[obj2gltf] $_" } }
+  if (Test-Path $obj2gltfStderr) { Get-Content $obj2gltfStderr | ForEach-Object { Write-Host "[obj2gltf err] $_" } }
+  if ($p.ExitCode -ne 0) { throw "obj2gltf failed with exit code $($p.ExitCode)" }
+  $gltf = @(Get-ChildItem -Path $out -File -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.Extension -in @('.gltf', '.glb') })
+  $conversionPath = 'mcx-obj-plus-obj2gltf'
 }
 
-if (-not $converted) {
-  Write-Host 'ModelConverterX help/log excerpts:'
-  Get-ChildItem $logs -File | ForEach-Object {
-    Write-Host "--- $($_.Name) ---"
-    Select-String -Path $_.FullName -Pattern 'format|gltf|glb|error|exception|texture|bgl' -CaseSensitive:$false | Select-Object -First 80 | ForEach-Object { Write-Host $_.Line }
-  }
-  throw 'ModelConverterX did not create a glTF/GLB output for term4.BGL'
-}
+if ($gltf.Count -lt 1) { throw 'No browser-readable Terminal 4 glTF/GLB was produced' }
 
 $files = Get-ChildItem -Path $out -File -Recurse | Sort-Object FullName
 $manifest = [ordered]@{
@@ -93,6 +93,7 @@ $manifest = [ordered]@{
   sourceBytes = (Get-Item $source).Length
   sourceSha256 = (Get-FileHash $source -Algorithm SHA256).Hash.ToLowerInvariant()
   converter = 'ModelConverterX 1.8'
+  conversionPath = $conversionPath
   stagedTextureCount = $rootTextures.Count
   generatedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
   outputs = @($files | ForEach-Object {
@@ -105,5 +106,5 @@ $manifest = [ordered]@{
 }
 $manifest | ConvertTo-Json -Depth 8 | Set-Content -Path (Join-Path $out 'extraction-manifest.json') -Encoding UTF8
 
-Write-Host 'Terminal 4 extraction outputs:'
+Write-Host "Terminal 4 extraction succeeded via $conversionPath"
 Get-ChildItem -Path $out -File -Recurse | ForEach-Object { Write-Host ("{0}  {1} bytes" -f $_.FullName, $_.Length) }

@@ -4,7 +4,8 @@ on:
   pull_request:
     paths:
       - 'scenery/term4.BGL'
-      - 'texture/**'
+      - '*.bmp'
+      - '*.dds'
       - 'scripts/extract-terminal4-web.ps1'
       - '.github/workflows/extract-terminal4-web.yml'
   workflow_dispatch:
@@ -19,10 +20,19 @@ concurrency:
 jobs:
   extract-terminal4:
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 8
     steps:
       - name: Check out exact source commit
         uses: actions/checkout@v4
+
+      - name: Set up Node.js converter runtime
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install OBJ to glTF converter
+        shell: pwsh
+        run: npm install --global obj2gltf
 
       - name: Extract Terminal 4 BGL to browser format
         shell: pwsh
@@ -43,6 +53,7 @@ jobs:
           name: terminal4-web-extraction-${{ github.sha }}
           path: |
             web-extract/terminal4/
+            web-extract/intermediate/
             web-extract/logs/
           if-no-files-found: warn
           retention-days: 7

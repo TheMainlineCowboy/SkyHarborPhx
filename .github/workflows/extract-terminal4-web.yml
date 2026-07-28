@@ -7,6 +7,7 @@ on:
       - '*.bmp'
       - '*.dds'
       - 'scripts/extract-terminal4-web.ps1'
+      - 'scripts/obj-to-gltf.mjs'
       - '.github/workflows/extract-terminal4-web.yml'
   workflow_dispatch:
 
@@ -20,7 +21,7 @@ concurrency:
 jobs:
   extract-terminal4:
     runs-on: windows-latest
-    timeout-minutes: 8
+    timeout-minutes: 6
     steps:
       - name: Check out exact source commit
         uses: actions/checkout@v4
@@ -29,10 +30,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 24
-
-      - name: Install OBJ to glTF converter
-        shell: pwsh
-        run: npm install --global obj2gltf
 
       - name: Extract Terminal 4 BGL to browser format
         shell: pwsh

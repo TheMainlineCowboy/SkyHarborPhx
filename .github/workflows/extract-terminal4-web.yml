@@ -1,0 +1,44 @@
+name: Extract Terminal 4 web asset
+
+on:
+  pull_request:
+    paths:
+      - 'scenery/term4.BGL'
+      - 'texture/**'
+      - 'scripts/extract-terminal4-web.ps1'
+      - '.github/workflows/extract-terminal4-web.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  extract-terminal4:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out exact source commit
+        uses: actions/checkout@v4
+
+      - name: Extract Terminal 4 BGL to browser format
+        shell: pwsh
+        run: ./scripts/extract-terminal4-web.ps1
+
+      - name: Verify extracted web asset exists
+        shell: pwsh
+        run: |
+          $models = @(Get-ChildItem web-extract/terminal4 -Recurse -File | Where-Object { $_.Extension -in @('.gltf','.glb') })
+          if ($models.Count -lt 1) { throw 'No glTF/GLB Terminal 4 model was produced' }
+          if (-not (Test-Path web-extract/terminal4/extraction-manifest.json)) { throw 'Missing extraction manifest' }
+          Get-ChildItem web-extract/terminal4 -Recurse -File | Format-Table FullName,Length
+
+      - name: Upload Terminal 4 extraction
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: terminal4-web-extraction-${{ github.sha }}
+          path: |
+            web-extract/terminal4/
+            web-extract/logs/
+          if-no-files-found: warn
+          retention-days: 7

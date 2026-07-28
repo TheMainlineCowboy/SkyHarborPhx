@@ -1,0 +1,51 @@
+name: Inspect KPHX ground source
+
+on:
+  pull_request:
+    paths:
+      - 'scenery/KPHX_ADEX.BGL'
+      - 'scripts/inspect-kphx-adex.mjs'
+      - '.github/workflows/inspect-kphx-ground.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kphx-ground-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  inspect-kphx-ground:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out exact source commit
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Decode KPHX airport surface records
+        run: node scripts/inspect-kphx-adex.mjs scenery/KPHX_ADEX.BGL web-extract/kphx-adex/inspection.json
+
+      - name: Verify decoded airport manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s web-extract/kphx-adex/inspection.json
+          grep -q '"selectedAirport": "KPHX"' web-extract/kphx-adex/inspection.json
+          grep -q '"taxiwayPoints"' web-extract/kphx-adex/inspection.json
+          grep -q '"taxiwayPaths"' web-extract/kphx-adex/inspection.json
+          grep -q '"parkings"' web-extract/kphx-adex/inspection.json
+
+      - name: Upload KPHX ground inspection
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kphx-ground-inspection-${{ github.sha }}
+          path: web-extract/kphx-adex/
+          if-no-files-found: warn
+          retention-days: 7

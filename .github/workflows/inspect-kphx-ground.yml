@@ -1,0 +1,64 @@
+name: Extract KPHX ground source
+
+on:
+  pull_request:
+    paths:
+      - 'scenery/KPHX_ADEX.BGL'
+      - 'scripts/inspect-kphx-adex.mjs'
+      - 'scripts/build-kphx-ground-gltf.mjs'
+      - '.github/workflows/inspect-kphx-ground.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kphx-ground-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  extract-kphx-ground:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out exact source commit
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Decode KPHX airport surface records
+        run: node scripts/inspect-kphx-adex.mjs scenery/KPHX_ADEX.BGL web-extract/kphx-adex/inspection.json
+
+      - name: Build airport-wide KPHX browser ground
+        run: node scripts/build-kphx-ground-gltf.mjs web-extract/kphx-adex/inspection.json web-extract/kphx-ground
+
+      - name: Verify decoded airport and ground asset
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s web-extract/kphx-adex/inspection.json
+          test -s web-extract/kphx-ground/kphx-ground.gltf
+          test -s web-extract/kphx-ground/kphx-ground.bin
+          test -s web-extract/kphx-ground/ground-manifest.json
+          grep -q '"selectedAirport": "KPHX"' web-extract/kphx-adex/inspection.json
+          grep -q '"taxiwayPoints": 870' web-extract/kphx-ground/ground-manifest.json
+          grep -q '"taxiwayPaths": 1302' web-extract/kphx-ground/ground-manifest.json
+          grep -q '"parkings": 240' web-extract/kphx-ground/ground-manifest.json
+          grep -q '"apronTriangles": 1860' web-extract/kphx-ground/ground-manifest.json
+          grep -q 'PHX_KPHX_AuthoredGround' web-extract/kphx-ground/kphx-ground.gltf
+          test "$(stat -c%s web-extract/kphx-ground/kphx-ground.bin)" -gt 500000
+          find web-extract/kphx-ground -type f -printf '%p %s bytes\n'
+
+      - name: Upload KPHX ground extraction
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kphx-ground-extraction-${{ github.sha }}
+          path: |
+            web-extract/kphx-adex/
+            web-extract/kphx-ground/
+          if-no-files-found: warn
+          retention-days: 7

@@ -20,12 +20,7 @@ if (-not $mcx) { throw 'ModelConverterX.exe was not found after extraction' }
 Write-Host "Using ModelConverterX: $($mcx.FullName)"
 
 function Invoke-BoundedProcess {
-  param(
-    [string] $FilePath,
-    [string[]] $Arguments,
-    [string] $Name,
-    [int] $TimeoutSeconds
-  )
+  param([string] $FilePath, [string[]] $Arguments, [string] $Name, [int] $TimeoutSeconds)
   $stdout = Join-Path $logs "$Name.stdout.txt"
   $stderr = Join-Path $logs "$Name.stderr.txt"
   Remove-Item $stdout, $stderr -Force -ErrorAction SilentlyContinue
@@ -44,8 +39,6 @@ function Invoke-BoundedProcess {
 $source = Join-Path $root 'scenery\term4.BGL'
 if (-not (Test-Path $source)) { throw "Missing Terminal 4 source: $source" }
 
-# The original package's texture directory was flattened into the repository root during upload.
-# Restore that source layout only inside CI so MCX can resolve any maps that are present.
 $textureDir = Join-Path $root 'texture'
 New-Item -ItemType Directory -Force -Path $textureDir | Out-Null
 $rootTextures = @(Get-ChildItem -Path $root -File | Where-Object { $_.Extension -match '^\.(bmp|dds)$' })
@@ -55,8 +48,7 @@ Write-Host "Staged $($rootTextures.Count) flattened root textures into $textureD
 Get-ChildItem -Path $out -File -Recurse -ErrorAction SilentlyContinue | Remove-Item -Force
 Get-ChildItem -Path $intermediate -File -Recurse -ErrorAction SilentlyContinue | Remove-Item -Force
 
-# OBJ is intentionally used as the first extraction target. It avoids the MCX glTF writer path
-# that was hanging in CI while still preserving the real Terminal 4 mesh and UV coordinates.
+# MCX performs only the proprietary BGL -> open OBJ extraction. Everything after this is ours.
 $obj = Join-Path $intermediate 'terminal4.obj'
 $objResult = Invoke-BoundedProcess -FilePath $mcx.FullName -Arguments @($source, '-out', $obj, '-format', 'OBJ') -Name 'mcx-obj' -TimeoutSeconds 75
 if (-not (Test-Path $obj) -or (Get-Item $obj).Length -lt 1024) {
@@ -65,10 +57,11 @@ if (-not (Test-Path $obj) -or (Get-Item $obj).Length -lt 1024) {
 Write-Host "MCX produced Terminal 4 OBJ: $((Get-Item $obj).Length) bytes"
 
 $target = Join-Path $out 'terminal4.gltf'
-$obj2gltf = (Get-Command obj2gltf.cmd -ErrorAction Stop).Source
-$convert = Invoke-BoundedProcess -FilePath $obj2gltf -Arguments @('-i', $obj, '-o', $target) -Name 'obj2gltf' -TimeoutSeconds 90
+$node = (Get-Command node.exe -ErrorAction Stop).Source
+$converter = Join-Path $root 'scripts\obj-to-gltf.mjs'
+$convert = Invoke-BoundedProcess -FilePath $node -Arguments @($converter, $obj, $target) -Name 'obj-to-gltf' -TimeoutSeconds 90
 if ($convert.ExitCode -ne 0 -or -not (Test-Path $target) -or (Get-Item $target).Length -lt 1024) {
-  throw "obj2gltf did not produce a usable glTF (exit=$($convert.ExitCode), timedOut=$($convert.TimedOut))"
+  throw "Checked-in OBJ converter did not produce a usable glTF (exit=$($convert.ExitCode), timedOut=$($convert.TimedOut))"
 }
 
 $files = Get-ChildItem -Path $out -File -Recurse | Sort-Object FullName
@@ -77,7 +70,7 @@ $manifest = [ordered]@{
   source = 'scenery/term4.BGL'
   sourceBytes = (Get-Item $source).Length
   sourceSha256 = (Get-FileHash $source -Algorithm SHA256).Hash.ToLowerInvariant()
-  converter = 'ModelConverterX 1.8 -> OBJ -> obj2gltf'
+  converter = 'ModelConverterX 1.8 -> OBJ -> RampReady obj-to-gltf'
   stagedTextureCount = $rootTextures.Count
   objBytes = (Get-Item $obj).Length
   generatedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
@@ -91,5 +84,5 @@ $manifest = [ordered]@{
 }
 $manifest | ConvertTo-Json -Depth 8 | Set-Content -Path (Join-Path $out 'extraction-manifest.json') -Encoding UTF8
 
-Write-Host 'Terminal 4 extraction succeeded via MCX OBJ -> obj2gltf'
+Write-Host 'Terminal 4 extraction succeeded via MCX OBJ -> RampReady glTF converter'
 Get-ChildItem -Path $out -File -Recurse | ForEach-Object { Write-Host ("{0}  {1} bytes" -f $_.FullName, $_.Length) }

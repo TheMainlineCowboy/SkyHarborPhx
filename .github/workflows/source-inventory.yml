@@ -15,14 +15,14 @@ permissions:
 jobs:
   inventory:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - name: Inventory source files
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p source-inventory
+          mkdir -p source-inventory/models source-inventory/analysis
           find . -type f -not -path './.git/*' -printf '%P\t%s\n' | sort > source-inventory/files.tsv
           find . -type f -not -path './.git/*' -exec sha256sum {} + | sed 's#  \./#\t#' | sort -k2 > source-inventory/sha256.tsv
           printf 'BGL files: ' > source-inventory/summary.txt
@@ -34,6 +34,68 @@ jobs:
           printf 'GLTF/GLB files: ' >> source-inventory/summary.txt
           find . -type f \( -iname '*.gltf' -o -iname '*.glb' \) | wc -l >> source-inventory/summary.txt
           cat source-inventory/summary.txt
+      - name: Extract every embedded authored MDLX model
+        shell: bash
+        run: |
+          set -u
+          : > source-inventory/model-results.tsv
+          while IFS= read -r bgl; do
+            name="$(basename "${bgl%.*}")"
+            out="source-inventory/models/$name"
+            mkdir -p "$out"
+            if node scripts/extract-terminal4-mdlx.mjs "$bgl" "$out" >"$out/stdout.json" 2>"$out/stderr.txt"; then
+              printf '%s\tsuccess\n' "$bgl" >> source-inventory/model-results.tsv
+            else
+              printf '%s\tno-drawable-mdlx\n' "$bgl" >> source-inventory/model-results.tsv
+              rm -f "$out/terminal4.gltf" "$out/terminal4.bin"
+            fi
+          done < <(find scenery -maxdepth 1 -type f -iname '*.BGL' | sort)
+      - name: Decode airport geometry and inspect scenery sections
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/inspect-kphx-adex.mjs scenery/KPHX_ADEX.BGL source-inventory/analysis/kphx-adex.json
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          const inputs = ['scenery/KPHX_ADEX.BGL', 'scenery/PHX_Scenery.BGL'];
+          const out = {};
+          for (const input of inputs) {
+            const data = fs.readFileSync(input);
+            const u16 = (o) => data.readUInt16LE(o);
+            const u32 = (o) => data.readUInt32LE(o);
+            const sections = [];
+            const sectionCount = data.length >= 0x38 && u32(0) === 0x19920201 ? u32(0x14) : 0;
+            for (let i = 0; i < sectionCount; i += 1) {
+              const o = 0x38 + i * 20;
+              if (o + 20 > data.length) break;
+              const type = u32(o), flags = u32(o + 4), subsectionCount = u32(o + 8);
+              const subsectionOffset = u32(o + 12), subsectionBytes = u32(o + 16);
+              const subsectionSize = ((flags & 0x10000) | 0x40000) >>> 14;
+              const subsections = [];
+              for (let j = 0; j < subsectionCount; j += 1) {
+                const s = subsectionOffset + j * subsectionSize;
+                if (s + subsectionSize > data.length) break;
+                const recordCount = u32(s + 4), dataOffset = u32(s + 8), dataBytes = u32(s + 12);
+                const records = [];
+                let cursor = dataOffset;
+                const end = Math.min(data.length, dataOffset + dataBytes);
+                for (let k = 0; k < Math.max(recordCount, 1) && cursor + 6 <= end; k += 1) {
+                  const id = u16(cursor), size = u32(cursor + 2);
+                  if (size < 6 || cursor + size > end) break;
+                  records.push({ index: k, offset: cursor, id, idHex: `0x${id.toString(16).padStart(4,'0')}`, size, prefixHex: data.subarray(cursor, Math.min(cursor + 80, cursor + size)).toString('hex') });
+                  cursor += size;
+                }
+                subsections.push({ index: j, offset: s, recordCount, dataOffset, dataBytes, records });
+              }
+              sections.push({ index: i, type, typeHex: `0x${type.toString(16).padStart(8,'0')}`, flags, subsectionCount, subsectionOffset, subsectionBytes, subsectionSize, subsections });
+            }
+            const ascii = data.toString('latin1');
+            const guidMatches = [...ascii.matchAll(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi)].map((m) => ({ value: m[0].toLowerCase(), offset: m.index }));
+            out[input] = { bytes: data.length, sectionCount, sections, guidMatches };
+          }
+          fs.writeFileSync('source-inventory/analysis/bgl-sections.json', JSON.stringify(out, null, 2));
+          NODE
       - name: Upload inventory
         uses: actions/upload-artifact@v4
         with:

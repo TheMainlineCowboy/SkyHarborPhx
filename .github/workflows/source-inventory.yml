@@ -18,21 +18,21 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - name: Inventory source files
+      - name: Inventory and stage every source asset
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p source-inventory/models source-inventory/analysis source-inventory/bgl
+          mkdir -p source-inventory/models source-inventory/analysis source-inventory/source/scenery source-inventory/source/textures
           find . -type f -not -path './.git/*' -printf '%P\t%s\n' | sort > source-inventory/files.tsv
           find . -type f -not -path './.git/*' -exec sha256sum {} + | sed 's#  \./#\t#' | sort -k2 > source-inventory/sha256.tsv
-          cp scenery/KPHX_ADEX.BGL source-inventory/bgl/
-          cp scenery/PHX_Scenery.BGL source-inventory/bgl/
+          find scenery -maxdepth 1 -type f -iname '*.BGL' -exec cp {} source-inventory/source/scenery/ \;
+          find . -maxdepth 1 -type f \( -iname '*.bmp' -o -iname '*.dds' \) -exec cp {} source-inventory/source/textures/ \;
           printf 'BGL files: ' > source-inventory/summary.txt
-          find . -type f -iname '*.bgl' | wc -l >> source-inventory/summary.txt
+          find scenery -maxdepth 1 -type f -iname '*.bgl' | wc -l >> source-inventory/summary.txt
           printf 'DDS files: ' >> source-inventory/summary.txt
-          find . -type f -iname '*.dds' | wc -l >> source-inventory/summary.txt
+          find . -maxdepth 1 -type f -iname '*.dds' | wc -l >> source-inventory/summary.txt
           printf 'BMP files: ' >> source-inventory/summary.txt
-          find . -type f -iname '*.bmp' | wc -l >> source-inventory/summary.txt
+          find . -maxdepth 1 -type f -iname '*.bmp' | wc -l >> source-inventory/summary.txt
           printf 'GLTF/GLB files: ' >> source-inventory/summary.txt
           find . -type f \( -iname '*.gltf' -o -iname '*.glb' \) | wc -l >> source-inventory/summary.txt
           cat source-inventory/summary.txt
@@ -82,8 +82,8 @@ jobs:
                 let cursor = dataOffset;
                 const end = Math.min(data.length, dataOffset + dataBytes);
                 for (let k = 0; k < Math.max(recordCount, 1) && cursor + 6 <= end; k += 1) {
-                  const id = u16(cursor), size = u32(cursor + 2);
-                  if (size < 6 || cursor + size > end) break;
+                  const id = u16(cursor), size = u16(cursor + 2);
+                  if (size < 4 || cursor + size > end) break;
                   records.push({ index: k, offset: cursor, id, idHex: `0x${id.toString(16).padStart(4,'0')}`, size, prefixHex: data.subarray(cursor, Math.min(cursor + 80, cursor + size)).toString('hex') });
                   cursor += size;
                 }
@@ -91,13 +91,11 @@ jobs:
               }
               sections.push({ index: i, type, typeHex: `0x${type.toString(16).padStart(8,'0')}`, flags, subsectionCount, subsectionOffset, subsectionBytes, subsectionSize, subsections });
             }
-            const ascii = data.toString('latin1');
-            const guidMatches = [...ascii.matchAll(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi)].map((m) => ({ value: m[0].toLowerCase(), offset: m.index }));
-            out[input] = { bytes: data.length, sectionCount, sections, guidMatches };
+            out[input] = { bytes: data.length, sectionCount, sections };
           }
           fs.writeFileSync('source-inventory/analysis/bgl-sections.json', JSON.stringify(out, null, 2));
           NODE
-      - name: Upload inventory
+      - name: Upload complete source inventory
         uses: actions/upload-artifact@v4
         with:
           name: skyharbor-source-inventory-${{ github.sha }}

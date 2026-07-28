@@ -22,9 +22,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p source-inventory/models source-inventory/analysis
+          mkdir -p source-inventory/models source-inventory/analysis source-inventory/bgl
           find . -type f -not -path './.git/*' -printf '%P\t%s\n' | sort > source-inventory/files.tsv
           find . -type f -not -path './.git/*' -exec sha256sum {} + | sed 's#  \./#\t#' | sort -k2 > source-inventory/sha256.tsv
+          cp scenery/KPHX_ADEX.BGL source-inventory/bgl/
+          cp scenery/PHX_Scenery.BGL source-inventory/bgl/
           printf 'BGL files: ' > source-inventory/summary.txt
           find . -type f -iname '*.bgl' | wc -l >> source-inventory/summary.txt
           printf 'DDS files: ' >> source-inventory/summary.txt
@@ -57,7 +59,6 @@ jobs:
           node scripts/inspect-kphx-adex.mjs scenery/KPHX_ADEX.BGL source-inventory/analysis/kphx-adex.json
           node --input-type=module <<'NODE'
           import fs from 'node:fs';
-          import path from 'node:path';
           const inputs = ['scenery/KPHX_ADEX.BGL', 'scenery/PHX_Scenery.BGL'];
           const out = {};
           for (const input of inputs) {

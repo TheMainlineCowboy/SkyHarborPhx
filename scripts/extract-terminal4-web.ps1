@@ -49,8 +49,17 @@ Write-Host "MCX help exit=$($help.ExitCode) timedOut=$($help.TimedOut)"
 
 $source = Join-Path $root 'scenery\term4.BGL'
 if (-not (Test-Path $source)) { throw "Missing Terminal 4 source: $source" }
+
+# The original scenery package was uploaded to GitHub with its texture directory flattened
+# into the repository root. Recreate the expected sibling `texture` directory only in CI so
+# ModelConverterX can resolve as many source materials as are actually present.
 $textureDir = Join-Path $root 'texture'
-if (-not (Test-Path $textureDir)) { throw "Missing source texture directory: $textureDir" }
+New-Item -ItemType Directory -Force -Path $textureDir | Out-Null
+$rootTextures = @(Get-ChildItem -Path $root -File | Where-Object { $_.Extension -match '^\.(bmp|dds)$' })
+foreach ($texture in $rootTextures) {
+  Copy-Item $texture.FullName -Destination (Join-Path $textureDir $texture.Name) -Force
+}
+Write-Host "Staged $($rootTextures.Count) flattened root textures into $textureDir"
 
 $candidates = @('GLTF', 'GLTF2', 'GLTF_2', 'GLTF_2_0')
 $converted = $false
@@ -84,6 +93,7 @@ $manifest = [ordered]@{
   sourceBytes = (Get-Item $source).Length
   sourceSha256 = (Get-FileHash $source -Algorithm SHA256).Hash.ToLowerInvariant()
   converter = 'ModelConverterX 1.8'
+  stagedTextureCount = $rootTextures.Count
   generatedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
   outputs = @($files | ForEach-Object {
     [ordered]@{

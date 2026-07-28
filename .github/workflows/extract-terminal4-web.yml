@@ -4,10 +4,7 @@ on:
   pull_request:
     paths:
       - 'scenery/term4.BGL'
-      - '*.bmp'
-      - '*.dds'
-      - 'scripts/extract-terminal4-web.ps1'
-      - 'scripts/obj-to-gltf.mjs'
+      - 'scripts/extract-terminal4-mdlx.mjs'
       - '.github/workflows/extract-terminal4-web.yml'
   workflow_dispatch:
 
@@ -20,37 +17,36 @@ concurrency:
 
 jobs:
   extract-terminal4:
-    runs-on: windows-latest
-    timeout-minutes: 6
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Check out exact source commit
         uses: actions/checkout@v4
 
-      - name: Set up Node.js converter runtime
+      - name: Set up Node.js extractor runtime
         uses: actions/setup-node@v4
         with:
           node-version: 24
 
-      - name: Extract Terminal 4 BGL to browser format
-        shell: pwsh
-        run: ./scripts/extract-terminal4-web.ps1
+      - name: Extract embedded FSX MDLX Terminal 4 model
+        run: node scripts/extract-terminal4-mdlx.mjs scenery/term4.BGL web-extract/terminal4
 
-      - name: Verify extracted web asset exists
-        shell: pwsh
+      - name: Verify extracted web asset
+        shell: bash
         run: |
-          $models = @(Get-ChildItem web-extract/terminal4 -Recurse -File | Where-Object { $_.Extension -in @('.gltf','.glb') })
-          if ($models.Count -lt 1) { throw 'No glTF/GLB Terminal 4 model was produced' }
-          if (-not (Test-Path web-extract/terminal4/extraction-manifest.json)) { throw 'Missing extraction manifest' }
-          Get-ChildItem web-extract/terminal4 -Recurse -File | Format-Table FullName,Length
+          set -euo pipefail
+          test -s web-extract/terminal4/terminal4.gltf
+          test -s web-extract/terminal4/terminal4.bin
+          test -s web-extract/terminal4/extraction-manifest.json
+          grep -q 'PHX_Terminal4_Authored' web-extract/terminal4/terminal4.gltf
+          grep -q 'triangleCount' web-extract/terminal4/extraction-manifest.json
+          find web-extract/terminal4 -type f -printf '%p %s bytes\n'
 
       - name: Upload Terminal 4 extraction
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: terminal4-web-extraction-${{ github.sha }}
-          path: |
-            web-extract/terminal4/
-            web-extract/intermediate/
-            web-extract/logs/
+          path: web-extract/terminal4/
           if-no-files-found: warn
           retention-days: 7

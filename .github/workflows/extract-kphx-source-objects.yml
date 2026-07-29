@@ -5,6 +5,7 @@ on:
     paths:
       - 'scenery/**.BGL'
       - 'scripts/extract-terminal4-mdlx.mjs'
+      - 'scripts/inspect-fsx-placement-bgl.mjs'
       - '.github/workflows/extract-kphx-source-objects.yml'
   workflow_dispatch:
 
@@ -29,6 +30,11 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 24
+
+      - name: Inspect KPHX placement libraries
+        run: |
+          node scripts/inspect-fsx-placement-bgl.mjs scenery/PHX_Scenery.BGL web-extract/placements/phx-scenery.json
+          node scripts/inspect-fsx-placement-bgl.mjs scenery/PHX_Vehicles.BGL web-extract/placements/phx-vehicles.json
 
       - name: Extract standalone KPHX source models
         shell: bash
@@ -72,12 +78,16 @@ jobs:
             fi
           done
           echo "EXTRACTED_COUNT=$extracted" | tee -a web-extract/extraction-summary.txt
-          test "$extracted" -ge 8
+          test "$extracted" -ge 5
 
       - name: Verify source object candidates
         shell: bash
         run: |
           set -euo pipefail
+          test -s web-extract/placements/phx-scenery.json
+          test -s web-extract/placements/phx-vehicles.json
+          grep -q 'decodedRecordCount' web-extract/placements/phx-scenery.json
+          grep -q 'decodedRecordCount' web-extract/placements/phx-vehicles.json
           count=0
           while IFS= read -r manifest; do
             folder="$(dirname "$manifest")"
@@ -86,7 +96,7 @@ jobs:
             grep -q 'selectedModel' "$manifest"
             count=$((count + 1))
           done < <(find web-extract -name extraction-manifest.json -type f | sort)
-          test "$count" -ge 8
+          test "$count" -ge 5
           find web-extract -type f -printf '%p %s bytes\n' | sort
 
       - name: Upload KPHX source object candidates

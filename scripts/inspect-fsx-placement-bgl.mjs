@@ -12,6 +12,7 @@ const i32 = (offset) => data.readInt32LE(offset);
 const f32 = (offset) => data.readFloatLE(offset);
 const lonDeg = (raw) => raw * (360 / (3 * 0x10000000)) - 180;
 const latDeg = (raw) => 90 - raw * (180 / (2 * 0x10000000));
+const headingDeg = (raw) => raw * (360 / 0x100000000);
 
 if (data.length < 0x38 || u32(0) !== 0x19920201 || u32(4) !== 0x38) {
   throw new Error(`${inputArg} is not an FSX-format BGL file`);
@@ -31,6 +32,20 @@ function finiteFloat(value) {
   return Number.isFinite(value) && Math.abs(value) < 1e7 ? value : null;
 }
 
+function decodeLibraryObjectPlacement(offset, size, id) {
+  if (id !== 0x0002 || size < 48) return null;
+  return {
+    longitude: lonDeg(u32(offset + 4)),
+    latitude: latDeg(u32(offset + 8)),
+    altitudeMetersCandidate: i32(offset + 12) / 1000,
+    flags: u32(offset + 16),
+    headingDegrees: headingDeg(u32(offset + 20)),
+    unknown24: u32(offset + 24),
+    modelGuid: guidAt(offset + 28),
+    scale: finiteFloat(f32(offset + 44)),
+  };
+}
+
 function recordEvidence(offset, size, id) {
   const end = Math.min(data.length, offset + size);
   const rawUint16 = [];
@@ -41,21 +56,6 @@ function recordEvidence(offset, size, id) {
     rawUint32.push(u32(offset + relative));
     rawFloat32.push(finiteFloat(f32(offset + relative)));
   }
-  const coordinateCandidates = [];
-  for (let relative = 6; relative + 8 <= Math.min(size, 48); relative += 2) {
-    const longitude = lonDeg(u32(offset + relative));
-    const latitude = latDeg(u32(offset + relative + 4));
-    if (longitude >= -180 && longitude <= 180 && latitude >= -90 && latitude <= 90) {
-      coordinateCandidates.push({ relativeOffset: relative, longitude, latitude });
-    }
-  }
-  const guidCandidates = [];
-  for (let relative = 6; relative + 16 <= size; relative += 2) {
-    const bytes = data.subarray(offset + relative, offset + relative + 16);
-    const allZero = bytes.every((value) => value === 0);
-    const allFF = bytes.every((value) => value === 0xff);
-    if (!allZero && !allFF) guidCandidates.push({ relativeOffset: relative, guid: guidAt(offset + relative) });
-  }
   return {
     sourceByteOffset: offset,
     id,
@@ -65,8 +65,7 @@ function recordEvidence(offset, size, id) {
     rawUint16,
     rawUint32,
     rawFloat32,
-    coordinateCandidates,
-    guidCandidates: guidCandidates.slice(-8),
+    libraryObjectPlacement: decodeLibraryObjectPlacement(offset, size, id),
   };
 }
 
@@ -101,10 +100,10 @@ for (let index = 0; index < sectionCount; index += 1) {
     const dataEnd = Math.min(data.length, dataOffset + dataBytes);
     const records = [];
     let cursor = dataOffset;
-    while (cursor + 6 <= dataEnd && records.length < Math.max(recordCount, 1)) {
+    while (cursor + 4 <= dataEnd && records.length < Math.max(recordCount, 1)) {
       const id = u16(cursor);
-      const size = u32(cursor + 2);
-      if (size < 6 || cursor + size > dataEnd) break;
+      const size = u16(cursor + 2);
+      if (size < 4 || cursor + size > dataEnd) break;
       records.push(recordEvidence(cursor, size, id));
       cursor += size;
     }
@@ -121,15 +120,26 @@ for (let index = 0; index < sectionCount; index += 1) {
   sections.push(section);
 }
 
+const placements = sections.flatMap((section) => section.subsections.flatMap((subsection) => subsection.records))
+  .map((record) => record.libraryObjectPlacement)
+  .filter(Boolean);
+const placementsByGuid = Object.fromEntries(
+  [...new Set(placements.map(({ modelGuid }) => modelGuid))]
+    .sort()
+    .map((modelGuid) => [modelGuid, placements.filter((placement) => placement.modelGuid === modelGuid)]),
+);
 const summary = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   source: path.relative(process.cwd(), input).replaceAll("\\", "/"),
   sourceBytes: data.length,
   sectionCount,
   sections,
   decodedRecordCount: sections.reduce((total, section) => total + section.subsections.reduce((subtotal, subsection) => subtotal + subsection.decodedRecordCount, 0), 0),
-  interpretation: "format-preserving section and record evidence; coordinate and GUID candidates are emitted without assigning placement semantics",
+  libraryObjectPlacementCount: placements.length,
+  uniqueModelGuidCount: Object.keys(placementsByGuid).length,
+  placementsByGuid,
+  interpretation: "FSX section records decoded with 16-bit record sizes; type 0x0002 records expose source coordinates, heading, scale and library-object GUID",
 };
 fs.mkdirSync(path.dirname(output), { recursive: true });
 fs.writeFileSync(output, `${JSON.stringify(summary, null, 2)}\n`);
-console.log(JSON.stringify({ source: summary.source, sourceBytes: summary.sourceBytes, sectionCount: summary.sectionCount, decodedRecordCount: summary.decodedRecordCount, sectionTypes: sections.map((section) => section.typeHex) }, null, 2));
+console.log(JSON.stringify({ source: summary.source, sourceBytes: summary.sourceBytes, sectionCount: summary.sectionCount, decodedRecordCount: summary.decodedRecordCount, libraryObjectPlacementCount: summary.libraryObjectPlacementCount, uniqueModelGuidCount: summary.uniqueModelGuidCount, sectionTypes: sections.map((section) => section.typeHex) }, null, 2));

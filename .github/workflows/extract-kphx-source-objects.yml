@@ -1,0 +1,59 @@
+name: Extract KPHX source object candidates
+
+on:
+  pull_request:
+    paths:
+      - 'scenery/PHX_Scenery.BGL'
+      - 'scenery/PHX_Vehicles.BGL'
+      - 'scripts/extract-terminal4-mdlx.mjs'
+      - '.github/workflows/extract-kphx-source-objects.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kphx-source-objects-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  extract-source-objects:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Check out exact source commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Set up Node.js extractor runtime
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Extract largest drawable PHX scenery model
+        run: node scripts/extract-terminal4-mdlx.mjs scenery/PHX_Scenery.BGL web-extract/phx-scenery
+
+      - name: Extract largest drawable PHX vehicle model
+        run: node scripts/extract-terminal4-mdlx.mjs scenery/PHX_Vehicles.BGL web-extract/phx-vehicles
+
+      - name: Verify source object candidates
+        shell: bash
+        run: |
+          set -euo pipefail
+          for folder in phx-scenery phx-vehicles; do
+            test -s "web-extract/$folder/terminal4.gltf"
+            test -s "web-extract/$folder/terminal4.bin"
+            test -s "web-extract/$folder/extraction-manifest.json"
+            grep -q 'selectedModel' "web-extract/$folder/extraction-manifest.json"
+          done
+          find web-extract -type f -printf '%p %s bytes\n' | sort
+
+      - name: Upload KPHX source object candidates
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kphx-source-object-candidates-${{ github.event.pull_request.head.sha || github.sha }}
+          path: web-extract/
+          if-no-files-found: error
+          retention-days: 14

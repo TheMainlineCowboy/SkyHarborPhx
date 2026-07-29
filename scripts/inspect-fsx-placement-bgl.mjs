@@ -66,6 +66,29 @@ function recordEvidence(offset, size, id) {
     rawUint32,
     rawFloat32,
     libraryObjectPlacement: decodeLibraryObjectPlacement(offset, size, id),
+    libraryModelRecord: null,
+  };
+}
+
+function libraryModelEvidence(offset, size) {
+  const modelBytes = u32(offset + 20);
+  return {
+    sourceByteOffset: offset,
+    id: null,
+    idHex: null,
+    size,
+    rawHex: data.subarray(offset, Math.min(offset + size, offset + 96)).toString("hex"),
+    rawUint16: [],
+    rawUint32: [],
+    rawFloat32: [],
+    libraryObjectPlacement: null,
+    libraryModelRecord: {
+      modelGuid: guidAt(offset),
+      headerBytes: u32(offset + 16),
+      modelBytes,
+      payloadFourCC: data.toString("ascii", offset + 24, offset + 28),
+      payloadType: data.toString("ascii", offset + 32, offset + 36),
+    },
   };
 }
 
@@ -100,7 +123,17 @@ for (let index = 0; index < sectionCount; index += 1) {
     const dataEnd = Math.min(data.length, dataOffset + dataBytes);
     const records = [];
     let cursor = dataOffset;
-    while (cursor + 4 <= dataEnd && records.length < Math.max(recordCount, 1)) {
+    while (cursor < dataEnd && records.length < Math.max(recordCount, 1)) {
+      if (type === 0x2b) {
+        if (cursor + 24 > dataEnd) break;
+        const modelBytes = u32(cursor + 20);
+        const size = 24 + modelBytes;
+        if (modelBytes < 12 || cursor + size > dataEnd) break;
+        records.push(libraryModelEvidence(cursor, size));
+        cursor += size;
+        continue;
+      }
+      if (cursor + 4 > dataEnd) break;
       const id = u16(cursor);
       const size = u16(cursor + 2);
       if (size < 4 || cursor + size > dataEnd) break;
@@ -120,26 +153,28 @@ for (let index = 0; index < sectionCount; index += 1) {
   sections.push(section);
 }
 
-const placements = sections.flatMap((section) => section.subsections.flatMap((subsection) => subsection.records))
-  .map((record) => record.libraryObjectPlacement)
-  .filter(Boolean);
+const allRecords = sections.flatMap((section) => section.subsections.flatMap((subsection) => subsection.records));
+const placements = allRecords.map((record) => record.libraryObjectPlacement).filter(Boolean);
+const modelRecords = allRecords.map((record) => record.libraryModelRecord).filter(Boolean);
 const placementsByGuid = Object.fromEntries(
   [...new Set(placements.map(({ modelGuid }) => modelGuid))]
     .sort()
     .map((modelGuid) => [modelGuid, placements.filter((placement) => placement.modelGuid === modelGuid)]),
 );
 const summary = {
-  schemaVersion: 2,
+  schemaVersion: 3,
   source: path.relative(process.cwd(), input).replaceAll("\\", "/"),
   sourceBytes: data.length,
   sectionCount,
   sections,
-  decodedRecordCount: sections.reduce((total, section) => total + section.subsections.reduce((subtotal, subsection) => subtotal + subsection.decodedRecordCount, 0), 0),
+  decodedRecordCount: allRecords.length,
   libraryObjectPlacementCount: placements.length,
   uniqueModelGuidCount: Object.keys(placementsByGuid).length,
   placementsByGuid,
-  interpretation: "FSX section records decoded with 16-bit record sizes; type 0x0002 records expose source coordinates, heading, scale and library-object GUID",
+  libraryModelRecordCount: modelRecords.length,
+  libraryModelRecords: modelRecords,
+  interpretation: "FSX section records decoded: type 0x25 contains 16-bit-sized library-object placements and type 0x2b contains GUID-prefixed RIFF/MDLX library models",
 };
 fs.mkdirSync(path.dirname(output), { recursive: true });
 fs.writeFileSync(output, `${JSON.stringify(summary, null, 2)}\n`);
-console.log(JSON.stringify({ source: summary.source, sourceBytes: summary.sourceBytes, sectionCount: summary.sectionCount, decodedRecordCount: summary.decodedRecordCount, libraryObjectPlacementCount: summary.libraryObjectPlacementCount, uniqueModelGuidCount: summary.uniqueModelGuidCount, sectionTypes: sections.map((section) => section.typeHex) }, null, 2));
+console.log(JSON.stringify({ source: summary.source, sourceBytes: summary.sourceBytes, sectionCount: summary.sectionCount, decodedRecordCount: summary.decodedRecordCount, libraryObjectPlacementCount: summary.libraryObjectPlacementCount, uniqueModelGuidCount: summary.uniqueModelGuidCount, libraryModelRecordCount: summary.libraryModelRecordCount, sectionTypes: sections.map((section) => section.typeHex) }, null, 2));

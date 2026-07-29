@@ -1,0 +1,115 @@
+name: Extract KPHX source object candidates
+
+on:
+  pull_request:
+    paths:
+      - 'scenery/**.BGL'
+      - 'scripts/extract-terminal4-mdlx.mjs'
+      - 'scripts/inspect-fsx-placement-bgl.mjs'
+      - '.github/workflows/extract-kphx-source-objects.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kphx-source-objects-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  extract-source-objects:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Check out exact source commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Set up Node.js extractor runtime
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Inspect KPHX placement and model libraries
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/inspect-fsx-placement-bgl.mjs scenery/PHX_Scenery.BGL web-extract/placements/phx-scenery.json
+          node scripts/inspect-fsx-placement-bgl.mjs scenery/PHX_Vehicles.BGL web-extract/placements/phx-vehicles.json
+          for name in term4 phxtermlink phxprkgrg wncater backhoe constrailer; do
+            node scripts/inspect-fsx-placement-bgl.mjs "scenery/${name}.BGL" "web-extract/model-records/${name}.json"
+          done
+
+      - name: Extract standalone KPHX source models
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p web-extract
+          : > web-extract/extraction-summary.txt
+          candidates=(
+            phxtwr
+            phx_t4_gar
+            phxprkgrg
+            phxtermlink
+            phxtwrrdlt
+            phxglo4
+            phxglo23
+            bridgerailphx1
+            bridgerailphx2
+            bridgerailphx3
+            bridgerailphx4
+            blastshield
+            tmarks
+            ushngr
+            wnhngr
+            wncater
+            pvdbb
+            backhoe
+            cone
+            constrailer
+            constzone
+          )
+          extracted=0
+          for name in "${candidates[@]}"; do
+            input="scenery/${name}.BGL"
+            output="web-extract/${name}"
+            if node scripts/extract-terminal4-mdlx.mjs "$input" "$output" > "$output.log" 2>&1; then
+              echo "EXTRACTED $name" | tee -a web-extract/extraction-summary.txt
+              extracted=$((extracted + 1))
+            else
+              rm -rf "$output"
+              echo "SKIPPED $name: $(tail -n 1 "$output.log")" | tee -a web-extract/extraction-summary.txt
+            fi
+          done
+          echo "EXTRACTED_COUNT=$extracted" | tee -a web-extract/extraction-summary.txt
+          test "$extracted" -ge 5
+
+      - name: Verify source object candidates
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s web-extract/placements/phx-scenery.json
+          test -s web-extract/placements/phx-vehicles.json
+          grep -q '"libraryObjectPlacementCount": 579' web-extract/placements/phx-scenery.json
+          grep -q '"libraryObjectPlacementCount": 422' web-extract/placements/phx-vehicles.json
+          test "$(find web-extract/model-records -name '*.json' -type f | wc -l)" -eq 6
+          count=0
+          while IFS= read -r manifest; do
+            folder="$(dirname "$manifest")"
+            test -s "$folder/terminal4.gltf"
+            test -s "$folder/terminal4.bin"
+            grep -q 'selectedModel' "$manifest"
+            count=$((count + 1))
+          done < <(find web-extract -name extraction-manifest.json -type f | sort)
+          test "$count" -ge 5
+          find web-extract -type f -printf '%p %s bytes\n' | sort
+
+      - name: Upload KPHX source object candidates
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kphx-source-object-candidates-${{ github.event.pull_request.head.sha || github.sha }}
+          path: web-extract/
+          if-no-files-found: error
+          retention-days: 14

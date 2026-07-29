@@ -3,8 +3,7 @@ name: Extract KPHX source object candidates
 on:
   pull_request:
     paths:
-      - 'scenery/PHX_Scenery.BGL'
-      - 'scenery/PHX_Vehicles.BGL'
+      - 'scenery/**.BGL'
       - 'scripts/extract-terminal4-mdlx.mjs'
       - '.github/workflows/extract-kphx-source-objects.yml'
   workflow_dispatch:
@@ -31,22 +30,63 @@ jobs:
         with:
           node-version: 24
 
-      - name: Extract largest drawable PHX scenery model
-        run: node scripts/extract-terminal4-mdlx.mjs scenery/PHX_Scenery.BGL web-extract/phx-scenery
-
-      - name: Extract largest drawable PHX vehicle model
-        run: node scripts/extract-terminal4-mdlx.mjs scenery/PHX_Vehicles.BGL web-extract/phx-vehicles
+      - name: Extract standalone KPHX source models
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p web-extract
+          : > web-extract/extraction-summary.txt
+          candidates=(
+            phxtwr
+            phx_t4_gar
+            phxprkgrg
+            phxtermlink
+            phxtwrrdlt
+            phxglo4
+            phxglo23
+            bridgerailphx1
+            bridgerailphx2
+            bridgerailphx3
+            bridgerailphx4
+            blastshield
+            tmarks
+            ushngr
+            wnhngr
+            wncater
+            pvdbb
+            backhoe
+            cone
+            constrailer
+            constzone
+          )
+          extracted=0
+          for name in "${candidates[@]}"; do
+            input="scenery/${name}.BGL"
+            output="web-extract/${name}"
+            if node scripts/extract-terminal4-mdlx.mjs "$input" "$output" > "$output.log" 2>&1; then
+              echo "EXTRACTED $name" | tee -a web-extract/extraction-summary.txt
+              extracted=$((extracted + 1))
+            else
+              rm -rf "$output"
+              echo "SKIPPED $name: $(tail -n 1 "$output.log")" | tee -a web-extract/extraction-summary.txt
+            fi
+          done
+          echo "EXTRACTED_COUNT=$extracted" | tee -a web-extract/extraction-summary.txt
+          test "$extracted" -ge 8
 
       - name: Verify source object candidates
         shell: bash
         run: |
           set -euo pipefail
-          for folder in phx-scenery phx-vehicles; do
-            test -s "web-extract/$folder/terminal4.gltf"
-            test -s "web-extract/$folder/terminal4.bin"
-            test -s "web-extract/$folder/extraction-manifest.json"
-            grep -q 'selectedModel' "web-extract/$folder/extraction-manifest.json"
-          done
+          count=0
+          while IFS= read -r manifest; do
+            folder="$(dirname "$manifest")"
+            test -s "$folder/terminal4.gltf"
+            test -s "$folder/terminal4.bin"
+            grep -q 'selectedModel' "$manifest"
+            count=$((count + 1))
+          done < <(find web-extract -name extraction-manifest.json -type f | sort)
+          test "$count" -ge 8
           find web-extract -type f -printf '%p %s bytes\n' | sort
 
       - name: Upload KPHX source object candidates
